@@ -2,13 +2,16 @@
 
 Cross-platform global keyboard shortcuts library for Rust.
 
+> **Fork Note**: This is a fork of [handy-computer/handy-keys](https://github.com/handy-computer/handy-keys) with added left/right modifier key support.
+
 ## Features
 
 - **Cross-platform**: Works on macOS, Windows, and Linux
 - **Global hotkeys**: Register system-wide keyboard shortcuts
 - **Hotkey blocking**: Registered hotkeys are blocked from reaching other applications
+- **Left/Right modifier detection**: Distinguish between left and right modifier keys (e.g., `LeftCmd` vs `RightCmd`)
 - **Modifier-only hotkeys**: Support for shortcuts like `Cmd+Shift` without a key
-- **String parsing**: Parse hotkeys from strings like `"Ctrl+Alt+Space"`
+- **String parsing**: Parse hotkeys from strings like `"Ctrl+Alt+Space"` or `"LeftCmd+K"`
 - **Hotkey recording**: Low-level keyboard listener for "record a hotkey" UI flows
 - **Serde support**: All types implement `Serialize`/`Deserialize`
 
@@ -16,7 +19,7 @@ Cross-platform global keyboard shortcuts library for Rust.
 
 ```toml
 [dependencies]
-handy-keys = "0.1"
+handy-keys = { git = "https://github.com/hey-ella-ai/handy-keys", branch = "main" }
 ```
 
 ## Quick Start
@@ -44,6 +47,62 @@ fn main() -> handy_keys::Result<()> {
 }
 ```
 
+## Left/Right Modifier Support
+
+This fork adds the ability to distinguish between left and right modifier keys.
+
+### Generic vs Specific Modifiers
+
+```rust
+use handy_keys::{Hotkey, Modifiers, Key};
+
+// Generic: matches EITHER left or right Command key
+let hotkey: Hotkey = "Cmd+K".parse()?;
+// Equivalent to:
+let hotkey = Hotkey::new(Modifiers::CMD, Key::K)?;
+
+// Specific: matches ONLY the left Command key
+let hotkey: Hotkey = "LeftCmd+K".parse()?;
+// Equivalent to:
+let hotkey = Hotkey::new(Modifiers::CMD_LEFT, Key::K)?;
+
+// Specific: matches ONLY the right Command key
+let hotkey: Hotkey = "RightCmd+K".parse()?;
+// Equivalent to:
+let hotkey = Hotkey::new(Modifiers::CMD_RIGHT, Key::K)?;
+
+// Mixed: left Command + right Shift + K
+let hotkey: Hotkey = "LeftCmd+RightShift+K".parse()?;
+```
+
+### Modifier-Only Hotkeys
+
+You can use specific modifier keys as hotkeys themselves:
+
+```rust
+// Right Option key as a hotkey trigger
+let hotkey: Hotkey = "RightOpt".parse()?;
+manager.register(hotkey)?;
+```
+
+### Recording with Left/Right Detection
+
+When recording hotkeys, events now include specific left/right information:
+
+```rust
+use handy_keys::KeyboardListener;
+
+let listener = KeyboardListener::new()?;
+
+while let Ok(event) = listener.recv() {
+    if event.is_key_down {
+        // event.modifiers will show LeftCmd, RightShift, etc.
+        println!("Modifiers: {}", event.modifiers);
+        // Output: "LeftCmd+RightShift" (not just "Cmd+Shift")
+    }
+}
+```
+
 ## Platform Notes
 
 ### macOS
@@ -68,6 +127,8 @@ Uses [rdev](https://crates.io/crates/rdev). On Wayland, hotkey blocking may not 
 
 ## Modifiers
 
+### Generic Modifiers (match either side)
+
 | Modifier | Aliases |
 |----------|---------|
 | `CMD` | `command`, `meta`, `super`, `win` |
@@ -75,6 +136,24 @@ Uses [rdev](https://crates.io/crates/rdev). On Wayland, hotkey blocking may not 
 | `OPT` | `option`, `alt` |
 | `SHIFT` | |
 | `FN` | `function` (macOS only) |
+
+### Left-Specific Modifiers
+
+| Modifier | Aliases |
+|----------|---------|
+| `CMD_LEFT` | `leftcmd`, `leftcommand`, `lcmd`, `lcommand` |
+| `CTRL_LEFT` | `leftctrl`, `leftcontrol`, `lctrl` |
+| `OPT_LEFT` | `leftopt`, `leftoption`, `leftalt`, `lopt`, `lalt` |
+| `SHIFT_LEFT` | `leftshift`, `lshift` |
+
+### Right-Specific Modifiers
+
+| Modifier | Aliases |
+|----------|---------|
+| `CMD_RIGHT` | `rightcmd`, `rightcommand`, `rcmd`, `rcommand` |
+| `CTRL_RIGHT` | `rightctrl`, `rightcontrol`, `rctrl` |
+| `OPT_RIGHT` | `rightopt`, `rightoption`, `rightalt`, `ropt`, `ralt` |
+| `SHIFT_RIGHT` | `rightshift`, `rshift` |
 
 ## Recording Hotkeys
 
@@ -95,6 +174,10 @@ while let Ok(event) = listener.recv() {
     }
 }
 ```
+
+## Backward Compatibility
+
+Existing code using generic modifiers (`Modifiers::CMD`, `"Cmd+K"`, etc.) continues to work unchanged. Generic modifiers match either left or right physical keys.
 
 ## License
 
