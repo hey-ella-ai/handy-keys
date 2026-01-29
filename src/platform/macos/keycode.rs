@@ -59,11 +59,11 @@ mod keycodes {
     pub const GRAVE: u16 = 0x32;
     pub const DELETE: u16 = 0x33;
     pub const ESCAPE: u16 = 0x35;
-    pub const COMMAND: u16 = 0x37;
-    pub const SHIFT: u16 = 0x38;
+    pub const COMMAND: u16 = 0x37; // Left Command
+    pub const SHIFT: u16 = 0x38; // Left Shift
     pub const CAPS_LOCK: u16 = 0x39;
-    pub const OPTION: u16 = 0x3A;
-    pub const CONTROL: u16 = 0x3B;
+    pub const OPTION: u16 = 0x3A; // Left Option
+    pub const CONTROL: u16 = 0x3B; // Left Control
     pub const RIGHT_SHIFT: u16 = 0x3C;
     pub const RIGHT_OPTION: u16 = 0x3D;
     pub const RIGHT_CONTROL: u16 = 0x3E;
@@ -225,22 +225,41 @@ pub fn keycode_to_key(keycode: CGKeyCode) -> Option<Key> {
     }
 }
 
-/// Convert a modifier keycode to the corresponding Modifier flag
+/// Convert a modifier keycode to the corresponding Modifier flag.
+///
+/// Returns the specific left or right modifier variant based on the physical key pressed.
 pub fn keycode_to_modifier(keycode: CGKeyCode) -> Option<Modifiers> {
     match keycode {
-        keycodes::COMMAND | keycodes::RIGHT_COMMAND => Some(Modifiers::CMD),
-        keycodes::SHIFT | keycodes::RIGHT_SHIFT => Some(Modifiers::SHIFT),
-        keycodes::CONTROL | keycodes::RIGHT_CONTROL => Some(Modifiers::CTRL),
-        keycodes::OPTION | keycodes::RIGHT_OPTION => Some(Modifiers::OPT),
+        // Left modifiers
+        keycodes::COMMAND => Some(Modifiers::CMD_LEFT),
+        keycodes::SHIFT => Some(Modifiers::SHIFT_LEFT),
+        keycodes::CONTROL => Some(Modifiers::CTRL_LEFT),
+        keycodes::OPTION => Some(Modifiers::OPT_LEFT),
+
+        // Right modifiers
+        keycodes::RIGHT_COMMAND => Some(Modifiers::CMD_RIGHT),
+        keycodes::RIGHT_SHIFT => Some(Modifiers::SHIFT_RIGHT),
+        keycodes::RIGHT_CONTROL => Some(Modifiers::CTRL_RIGHT),
+        keycodes::RIGHT_OPTION => Some(Modifiers::OPT_RIGHT),
+
+        // Function key (no left/right distinction)
         keycodes::FUNCTION => Some(Modifiers::FN),
+
         _ => None,
     }
 }
 
-/// Convert CGEventFlags to our Modifiers bitflags
+/// Convert CGEventFlags to our Modifiers bitflags.
+///
+/// Note: This returns generic modifiers (CMD, SHIFT, etc.) because CGEventFlags
+/// don't distinguish between left and right modifier keys. For specific left/right
+/// tracking, use `keycode_to_modifier()` with the keycode from FlagsChanged events.
+#[allow(dead_code)]
 pub fn flags_to_modifiers(flags: CGEventFlags) -> Modifiers {
     let mut mods = Modifiers::empty();
 
+    // CGEventFlags don't distinguish left/right, so we use generic flags here.
+    // The listener maintains its own tracking of which specific keys are pressed.
     if flags.contains(CGEventFlags::MaskCommand) {
         mods |= Modifiers::CMD;
     }
@@ -258,4 +277,27 @@ pub fn flags_to_modifiers(flags: CGEventFlags) -> Modifiers {
     }
 
     mods
+}
+
+/// Check if a specific modifier type is active in CGEventFlags.
+///
+/// This is a helper for determining whether a modifier category is pressed,
+/// regardless of which side (left or right) is being used.
+pub fn flags_has_modifier(flags: CGEventFlags, modifier: Modifiers) -> bool {
+    if modifier.intersects(Modifiers::CMD) && flags.contains(CGEventFlags::MaskCommand) {
+        return true;
+    }
+    if modifier.intersects(Modifiers::SHIFT) && flags.contains(CGEventFlags::MaskShift) {
+        return true;
+    }
+    if modifier.intersects(Modifiers::CTRL) && flags.contains(CGEventFlags::MaskControl) {
+        return true;
+    }
+    if modifier.intersects(Modifiers::OPT) && flags.contains(CGEventFlags::MaskAlternate) {
+        return true;
+    }
+    if modifier.intersects(Modifiers::FN) && flags.contains(CGEventFlags::MaskSecondaryFn) {
+        return true;
+    }
+    false
 }

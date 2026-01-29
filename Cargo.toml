@@ -1,10 +1,10 @@
 [package]
 name = "handy-keys"
-version = "0.1.4"
+version = "0.1.4-fork.1"
 edition = "2021"
-description = "Cross-platform global keyboard shortcuts library"
+description = "Cross-platform global keyboard shortcuts library with left/right modifier support"
 license = "MIT"
-repository = "https://github.com/handy-computer/handy-keys"
+repository = "https://github.com/hey-ella-ai/handy-keys"
 documentation = "https://docs.rs/handy-keys"
 readme = "README.md"
 keywords = ["keyboard", "hotkey", "shortcuts", "global", "cross-platform"]

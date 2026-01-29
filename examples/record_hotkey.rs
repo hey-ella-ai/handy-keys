@@ -3,14 +3,18 @@
 //! This example demonstrates how to use KeyboardListener to capture
 //! keyboard events for a "record hotkey" UI flow.
 //!
+//! With left/right modifier support, you'll see which specific modifier key
+//! was pressed (e.g., "LeftCmd+K" or "RightShift+A").
+//!
 //! Run with: cargo run --example record_hotkey
 
 use handy_keys::{KeyboardListener, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    println!("Recording keyboard events...");
+    println!("Recording keyboard events with LEFT/RIGHT modifier detection...");
     println!("Press keys to see events. Press Escape to exit.");
+    println!("Try pressing Left vs Right modifier keys to see the difference!");
     println!();
 
     let listener = KeyboardListener::new()?;

@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::error::{Error, Result};
 use crate::listener::{BlockingHotkeys, KeyboardListener};
-use crate::types::{Hotkey, HotkeyEvent, HotkeyId, HotkeyState, KeyEvent};
+use crate::types::{Hotkey, HotkeyEvent, HotkeyId, HotkeyState, KeyEvent, Modifiers};
 
 /// Internal state shared between the manager and the processing thread
 struct ManagerState {
@@ -26,7 +26,11 @@ impl ManagerState {
         }
     }
 
-    /// Process a key event and return any matching hotkey events
+    /// Process a key event and return any matching hotkey events.
+    ///
+    /// Uses `is_satisfied_by()` for modifier matching:
+    /// - A hotkey with generic `CMD` matches if either CMD_LEFT or CMD_RIGHT is pressed
+    /// - A hotkey with specific `CMD_LEFT` only matches if CMD_LEFT is pressed
     fn process_event(&mut self, event: &KeyEvent) -> Vec<HotkeyEvent> {
         let mut results = Vec::new();
 
@@ -36,8 +40,13 @@ impl ManagerState {
                 .hotkeys
                 .iter()
                 .filter(|(&id, hotkey)| {
-                    hotkey.modifiers == event.modifiers
-                        && hotkey.key == event.key
+                    // Key must match exactly
+                    hotkey.key == event.key
+                        // Modifiers must be satisfied (generic matches either side)
+                        && hotkey.modifiers.is_satisfied_by(event.modifiers)
+                        // No extra modifiers should be pressed
+                        && Self::modifiers_match_exactly(hotkey.modifiers, event.modifiers)
+                        // Not already pressed
                         && !self.pressed_hotkeys.contains(&id)
                 })
                 .map(|(&id, _)| id)
@@ -59,7 +68,8 @@ impl ManagerState {
                 .filter(|(&id, hotkey)| {
                     self.pressed_hotkeys.contains(&id)
                         && (hotkey.key == event.key
-                            || (event.key.is_none() && !event.modifiers.contains(hotkey.modifiers)))
+                            || (event.key.is_none()
+                                && !hotkey.modifiers.is_satisfied_by(event.modifiers)))
                 })
                 .map(|(&id, _)| id)
                 .collect();
@@ -74,6 +84,45 @@ impl ManagerState {
         }
 
         results
+    }
+
+    /// Check if pressed modifiers match the required modifiers exactly.
+    ///
+    /// For each modifier type (CMD, SHIFT, CTRL, OPT, FN):
+    /// - If required has it (either side), pressed must have it (either side)
+    /// - If required doesn't have it, pressed must not have it
+    fn modifiers_match_exactly(required: Modifiers, pressed: Modifiers) -> bool {
+        let req_has_cmd = required.intersects(Modifiers::CMD);
+        let pressed_has_cmd = pressed.intersects(Modifiers::CMD);
+        if req_has_cmd != pressed_has_cmd {
+            return false;
+        }
+
+        let req_has_shift = required.intersects(Modifiers::SHIFT);
+        let pressed_has_shift = pressed.intersects(Modifiers::SHIFT);
+        if req_has_shift != pressed_has_shift {
+            return false;
+        }
+
+        let req_has_ctrl = required.intersects(Modifiers::CTRL);
+        let pressed_has_ctrl = pressed.intersects(Modifiers::CTRL);
+        if req_has_ctrl != pressed_has_ctrl {
+            return false;
+        }
+
+        let req_has_opt = required.intersects(Modifiers::OPT);
+        let pressed_has_opt = pressed.intersects(Modifiers::OPT);
+        if req_has_opt != pressed_has_opt {
+            return false;
+        }
+
+        let req_has_fn = required.contains(Modifiers::FN);
+        let pressed_has_fn = pressed.contains(Modifiers::FN);
+        if req_has_fn != pressed_has_fn {
+            return false;
+        }
+
+        true
     }
 }
 
@@ -271,7 +320,11 @@ mod tests {
         }
     }
 
-    fn make_modifier_event(modifiers: Modifiers, is_key_down: bool, changed: Modifiers) -> KeyEvent {
+    fn make_modifier_event(
+        modifiers: Modifiers,
+        is_key_down: bool,
+        changed: Modifiers,
+    ) -> KeyEvent {
         KeyEvent {
             modifiers,
             key: None,
@@ -393,7 +446,8 @@ mod tests {
             state.hotkeys.insert(id, hotkey);
 
             // Press Cmd+Shift (no key)
-            let event = make_modifier_event(Modifiers::CMD | Modifiers::SHIFT, true, Modifiers::SHIFT);
+            let event =
+                make_modifier_event(Modifiers::CMD | Modifiers::SHIFT, true, Modifiers::SHIFT);
             let results = state.process_event(&event);
 
             assert_eq!(results.len(), 1);
@@ -448,6 +502,172 @@ mod tests {
             let results = state.process_event(&event);
 
             assert_eq!(results.len(), 0);
+        }
+
+        // Tests for left/right modifier support
+
+        #[test]
+        fn generic_cmd_matches_left_cmd() {
+            let mut state = ManagerState::new();
+            // Register generic Cmd+K (matches either side)
+            let hotkey = Hotkey::new(Modifiers::CMD, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press LeftCmd+K - should match generic Cmd+K
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::K), true);
+            let results = state.process_event(&event);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].id, id);
+            assert_eq!(results[0].state, HotkeyState::Pressed);
+        }
+
+        #[test]
+        fn generic_cmd_matches_right_cmd() {
+            let mut state = ManagerState::new();
+            // Register generic Cmd+K (matches either side)
+            let hotkey = Hotkey::new(Modifiers::CMD, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press RightCmd+K - should match generic Cmd+K
+            let event = make_key_event(Modifiers::CMD_RIGHT, Some(Key::K), true);
+            let results = state.process_event(&event);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].id, id);
+            assert_eq!(results[0].state, HotkeyState::Pressed);
+        }
+
+        #[test]
+        fn specific_left_cmd_matches_only_left() {
+            let mut state = ManagerState::new();
+            // Register specific LeftCmd+K
+            let hotkey = Hotkey::new(Modifiers::CMD_LEFT, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press LeftCmd+K - should match
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::K), true);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].id, id);
+
+            // Reset state
+            state.pressed_hotkeys.clear();
+
+            // Press RightCmd+K - should NOT match
+            let event = make_key_event(Modifiers::CMD_RIGHT, Some(Key::K), true);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 0);
+        }
+
+        #[test]
+        fn specific_right_cmd_matches_only_right() {
+            let mut state = ManagerState::new();
+            // Register specific RightCmd+K
+            let hotkey = Hotkey::new(Modifiers::CMD_RIGHT, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press RightCmd+K - should match
+            let event = make_key_event(Modifiers::CMD_RIGHT, Some(Key::K), true);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].id, id);
+
+            // Reset state
+            state.pressed_hotkeys.clear();
+
+            // Press LeftCmd+K - should NOT match
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::K), true);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 0);
+        }
+
+        #[test]
+        fn mixed_left_right_modifiers() {
+            let mut state = ManagerState::new();
+            // Register LeftCmd+RightShift+K
+            let hotkey = Hotkey::new(Modifiers::CMD_LEFT | Modifiers::SHIFT_RIGHT, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press LeftCmd+RightShift+K - should match
+            let event = make_key_event(
+                Modifiers::CMD_LEFT | Modifiers::SHIFT_RIGHT,
+                Some(Key::K),
+                true,
+            );
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+
+            // Reset state
+            state.pressed_hotkeys.clear();
+
+            // Press LeftCmd+LeftShift+K - should NOT match (wrong shift side)
+            let event = make_key_event(
+                Modifiers::CMD_LEFT | Modifiers::SHIFT_LEFT,
+                Some(Key::K),
+                true,
+            );
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 0);
+
+            // Press RightCmd+RightShift+K - should NOT match (wrong cmd side)
+            let event = make_key_event(
+                Modifiers::CMD_RIGHT | Modifiers::SHIFT_RIGHT,
+                Some(Key::K),
+                true,
+            );
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 0);
+        }
+
+        #[test]
+        fn modifier_only_left_right() {
+            let mut state = ManagerState::new();
+            // Register RightOption as a modifier-only hotkey
+            let hotkey = Hotkey::new(Modifiers::OPT_RIGHT, None).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press RightOption - should match
+            let event = make_modifier_event(Modifiers::OPT_RIGHT, true, Modifiers::OPT_RIGHT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Pressed);
+
+            // Reset state
+            state.pressed_hotkeys.clear();
+
+            // Press LeftOption - should NOT match
+            let event = make_modifier_event(Modifiers::OPT_LEFT, true, Modifiers::OPT_LEFT);
+            let results = state.process_event(&event);
+            assert_eq!(results.len(), 0);
+        }
+
+        #[test]
+        fn release_with_left_right_modifiers() {
+            let mut state = ManagerState::new();
+            // Register LeftCmd+K
+            let hotkey = Hotkey::new(Modifiers::CMD_LEFT, Key::K).unwrap();
+            let id = HotkeyId(0);
+            state.hotkeys.insert(id, hotkey);
+
+            // Press LeftCmd+K
+            let event = make_key_event(Modifiers::CMD_LEFT, Some(Key::K), true);
+            state.process_event(&event);
+            assert!(state.pressed_hotkeys.contains(&id));
+
+            // Release LeftCmd (while K is still held)
+            let event = make_modifier_event(Modifiers::empty(), false, Modifiers::CMD_LEFT);
+            let results = state.process_event(&event);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].state, HotkeyState::Released);
+            assert!(!state.pressed_hotkeys.contains(&id));
         }
     }
 }

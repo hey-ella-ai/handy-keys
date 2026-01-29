@@ -65,30 +65,67 @@ impl Hotkey {
     /// Format hotkey using Handy-compatible key names (lowercase with full modifier names)
     ///
     /// Uses platform-appropriate naming:
-    /// - macOS: "command", "option", "ctrl", "shift"
-    /// - Windows/Linux: "ctrl", "alt", "super", "shift"
+    /// - macOS: "command", "option", "ctrl", "shift" (with left/right prefix if specific)
+    /// - Windows/Linux: "ctrl", "alt", "super", "shift" (with left/right prefix if specific)
     pub fn to_handy_string(&self) -> String {
-        #[cfg(target_os = "macos")]
-        const MOD_NAMES: (&str, &str, &str, &str, &str) = ("ctrl", "option", "shift", "command", "fn");
-        #[cfg(not(target_os = "macos"))]
-        const MOD_NAMES: (&str, &str, &str, &str, &str) = ("ctrl", "alt", "shift", "super", "");
-
         let mut parts = Vec::new();
 
-        if self.modifiers.contains(Modifiers::CTRL) {
-            parts.push(MOD_NAMES.0);
+        // CTRL - check for specific left/right
+        let has_ctrl_left = self.modifiers.contains(Modifiers::CTRL_LEFT);
+        let has_ctrl_right = self.modifiers.contains(Modifiers::CTRL_RIGHT);
+        if has_ctrl_left && has_ctrl_right {
+            parts.push("ctrl".to_string());
+        } else if has_ctrl_left {
+            parts.push("leftctrl".to_string());
+        } else if has_ctrl_right {
+            parts.push("rightctrl".to_string());
         }
-        if self.modifiers.contains(Modifiers::OPT) {
-            parts.push(MOD_NAMES.1);
+
+        // OPT/ALT - check for specific left/right
+        let has_opt_left = self.modifiers.contains(Modifiers::OPT_LEFT);
+        let has_opt_right = self.modifiers.contains(Modifiers::OPT_RIGHT);
+        #[cfg(target_os = "macos")]
+        let opt_name = "option";
+        #[cfg(not(target_os = "macos"))]
+        let opt_name = "alt";
+        if has_opt_left && has_opt_right {
+            parts.push(opt_name.to_string());
+        } else if has_opt_left {
+            parts.push(format!("left{}", opt_name));
+        } else if has_opt_right {
+            parts.push(format!("right{}", opt_name));
         }
-        if self.modifiers.contains(Modifiers::SHIFT) {
-            parts.push(MOD_NAMES.2);
+
+        // SHIFT - check for specific left/right
+        let has_shift_left = self.modifiers.contains(Modifiers::SHIFT_LEFT);
+        let has_shift_right = self.modifiers.contains(Modifiers::SHIFT_RIGHT);
+        if has_shift_left && has_shift_right {
+            parts.push("shift".to_string());
+        } else if has_shift_left {
+            parts.push("leftshift".to_string());
+        } else if has_shift_right {
+            parts.push("rightshift".to_string());
         }
-        if self.modifiers.contains(Modifiers::CMD) {
-            parts.push(MOD_NAMES.3);
+
+        // CMD/SUPER - check for specific left/right
+        let has_cmd_left = self.modifiers.contains(Modifiers::CMD_LEFT);
+        let has_cmd_right = self.modifiers.contains(Modifiers::CMD_RIGHT);
+        #[cfg(target_os = "macos")]
+        let cmd_name = "command";
+        #[cfg(not(target_os = "macos"))]
+        let cmd_name = "super";
+        if has_cmd_left && has_cmd_right {
+            parts.push(cmd_name.to_string());
+        } else if has_cmd_left {
+            parts.push(format!("left{}", cmd_name));
+        } else if has_cmd_right {
+            parts.push(format!("right{}", cmd_name));
         }
-        if !MOD_NAMES.4.is_empty() && self.modifiers.contains(Modifiers::FN) {
-            parts.push(MOD_NAMES.4);
+
+        // FN (no left/right distinction)
+        #[cfg(target_os = "macos")]
+        if self.modifiers.contains(Modifiers::FN) {
+            parts.push("fn".to_string());
         }
 
         if let Some(key) = &self.key {

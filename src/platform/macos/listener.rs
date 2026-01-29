@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::platform::state::{BlockingHotkeys, ListenerState};
 use crate::types::{Key, KeyEvent};
 
-use super::keycode::{flags_to_modifiers, keycode_to_key, keycode_to_modifier};
+use super::keycode::{flags_has_modifier, keycode_to_key, keycode_to_modifier};
 use super::permissions::check_accessibility;
 
 /// Internal listener state returned to KeyboardListener
@@ -85,16 +85,16 @@ unsafe extern "C-unwind" fn event_tap_callback(
 
     let cg_event = event.as_ref();
     let flags = CGEvent::flags(Some(cg_event));
-    let modifiers = flags_to_modifiers(flags);
 
     let mut should_block = false;
 
     if let Ok(mut state) = state.lock() {
         match event_type {
             CGEventType::KeyDown => {
-                let keycode =
-                    CGEvent::integer_value_field(Some(cg_event), CGEventField::KeyboardEventKeycode)
-                        as u16;
+                let keycode = CGEvent::integer_value_field(
+                    Some(cg_event),
+                    CGEventField::KeyboardEventKeycode,
+                ) as u16;
 
                 let key = keycode_to_key(keycode);
 
@@ -105,6 +105,9 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 if key.is_none() && flags.contains(CGEventFlags::MaskSecondaryFn) {
                     return event.as_ptr();
                 }
+
+                // Use our tracked specific modifiers for the event
+                let modifiers = state.current_modifiers;
 
                 // Check if this should be blocked
                 should_block = state.should_block(modifiers, key);
@@ -117,9 +120,10 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 });
             }
             CGEventType::KeyUp => {
-                let keycode =
-                    CGEvent::integer_value_field(Some(cg_event), CGEventField::KeyboardEventKeycode)
-                        as u16;
+                let keycode = CGEvent::integer_value_field(
+                    Some(cg_event),
+                    CGEventField::KeyboardEventKeycode,
+                ) as u16;
 
                 let key = keycode_to_key(keycode);
 
@@ -127,6 +131,9 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 if key.is_none() && flags.contains(CGEventFlags::MaskSecondaryFn) {
                     return event.as_ptr();
                 }
+
+                // Use our tracked specific modifiers for the event
+                let modifiers = state.current_modifiers;
 
                 // Block key up if we blocked key down (to be consistent)
                 should_block = state.should_block(modifiers, key);
@@ -139,18 +146,17 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 });
             }
             CGEventType::FlagsChanged => {
-                let keycode =
-                    CGEvent::integer_value_field(Some(cg_event), CGEventField::KeyboardEventKeycode)
-                        as u16;
+                let keycode = CGEvent::integer_value_field(
+                    Some(cg_event),
+                    CGEventField::KeyboardEventKeycode,
+                ) as u16;
 
+                // Get the specific modifier that changed (left or right)
                 let changed_modifier = keycode_to_modifier(keycode);
 
                 // Check if this is a lock key (e.g., Caps Lock) which comes through
                 // as FlagsChanged but isn't a traditional modifier
                 let lock_key = keycode_to_key(keycode);
-
-                let prev_mods = state.current_modifiers;
-                state.current_modifiers = modifiers;
 
                 // Handle lock keys specially - they come through FlagsChanged
                 // but don't change our tracked modifier state
@@ -159,63 +165,73 @@ unsafe extern "C-unwind" fn event_tap_callback(
                     // or just emit both down and up on each press
                     let is_key_down = flags.contains(CGEventFlags::MaskAlphaShift);
 
-                    should_block = state.should_block(modifiers, Some(key));
+                    should_block = state.should_block(state.current_modifiers, Some(key));
 
                     let _ = state.event_sender.send(KeyEvent {
-                        modifiers,
+                        modifiers: state.current_modifiers,
                         key: Some(key),
                         is_key_down,
                         changed_modifier: None,
                     });
-                } else if modifiers != prev_mods {
-                    // Regular modifier key - only emit if modifiers actually changed
-                    // Determine press vs release by checking which bits changed
-                    let gained = modifiers.bits() & !prev_mods.bits();
-                    // A key is down if we gained any modifier bits
-                    let is_key_down = gained != 0;
+                } else if let Some(modifier) = changed_modifier {
+                    // Regular modifier key - update our specific tracking
+                    // Determine if the modifier is being pressed or released by checking
+                    // whether the corresponding flag is now set in CGEventFlags
+                    let is_key_down = flags_has_modifier(flags, modifier);
 
-                    // Check if this modifier-only combo should be blocked
+                    // Update our tracked modifier state with specific left/right info
+                    let prev_mods = state.current_modifiers;
                     if is_key_down {
-                        should_block = state.should_block(modifiers, None);
+                        state.current_modifiers |= modifier;
+                    } else {
+                        state.current_modifiers &= !modifier;
                     }
 
-                    let _ = state.event_sender.send(KeyEvent {
-                        modifiers,
-                        key: None,
-                        is_key_down,
-                        changed_modifier,
-                    });
+                    // Only emit event if state actually changed
+                    if state.current_modifiers != prev_mods {
+                        // Check if this modifier-only combo should be blocked
+                        if is_key_down {
+                            should_block = state.should_block(state.current_modifiers, None);
+                        }
+
+                        let _ = state.event_sender.send(KeyEvent {
+                            modifiers: state.current_modifiers,
+                            key: None,
+                            is_key_down,
+                            changed_modifier: Some(modifier),
+                        });
+                    }
                 }
             }
             // Mouse button events
             // Only report left/right clicks when modifiers are held (to avoid noise)
-            CGEventType::LeftMouseDown if !modifiers.is_empty() => {
+            CGEventType::LeftMouseDown if !state.current_modifiers.is_empty() => {
                 let _ = state.event_sender.send(KeyEvent {
-                    modifiers,
+                    modifiers: state.current_modifiers,
                     key: Some(Key::MouseLeft),
                     is_key_down: true,
                     changed_modifier: None,
                 });
             }
-            CGEventType::LeftMouseUp if !modifiers.is_empty() => {
+            CGEventType::LeftMouseUp if !state.current_modifiers.is_empty() => {
                 let _ = state.event_sender.send(KeyEvent {
-                    modifiers,
+                    modifiers: state.current_modifiers,
                     key: Some(Key::MouseLeft),
                     is_key_down: false,
                     changed_modifier: None,
                 });
             }
-            CGEventType::RightMouseDown if !modifiers.is_empty() => {
+            CGEventType::RightMouseDown if !state.current_modifiers.is_empty() => {
                 let _ = state.event_sender.send(KeyEvent {
-                    modifiers,
+                    modifiers: state.current_modifiers,
                     key: Some(Key::MouseRight),
                     is_key_down: true,
                     changed_modifier: None,
                 });
             }
-            CGEventType::RightMouseUp if !modifiers.is_empty() => {
+            CGEventType::RightMouseUp if !state.current_modifiers.is_empty() => {
                 let _ = state.event_sender.send(KeyEvent {
-                    modifiers,
+                    modifiers: state.current_modifiers,
                     key: Some(Key::MouseRight),
                     is_key_down: false,
                     changed_modifier: None,
@@ -227,8 +243,10 @@ unsafe extern "C-unwind" fn event_tap_callback(
             | CGEventType::RightMouseDown
             | CGEventType::RightMouseUp => {}
             CGEventType::OtherMouseDown => {
-                let button_number =
-                    CGEvent::integer_value_field(Some(cg_event), CGEventField::MouseEventButtonNumber);
+                let button_number = CGEvent::integer_value_field(
+                    Some(cg_event),
+                    CGEventField::MouseEventButtonNumber,
+                );
                 let key = match button_number {
                     2 => Some(Key::MouseMiddle),
                     3 => Some(Key::MouseX1),
@@ -237,7 +255,7 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 };
                 if let Some(key) = key {
                     let _ = state.event_sender.send(KeyEvent {
-                        modifiers,
+                        modifiers: state.current_modifiers,
                         key: Some(key),
                         is_key_down: true,
                         changed_modifier: None,
@@ -245,8 +263,10 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 }
             }
             CGEventType::OtherMouseUp => {
-                let button_number =
-                    CGEvent::integer_value_field(Some(cg_event), CGEventField::MouseEventButtonNumber);
+                let button_number = CGEvent::integer_value_field(
+                    Some(cg_event),
+                    CGEventField::MouseEventButtonNumber,
+                );
                 let key = match button_number {
                     2 => Some(Key::MouseMiddle),
                     3 => Some(Key::MouseX1),
@@ -255,7 +275,7 @@ unsafe extern "C-unwind" fn event_tap_callback(
                 };
                 if let Some(key) = key {
                     let _ = state.event_sender.send(KeyEvent {
-                        modifiers,
+                        modifiers: state.current_modifiers,
                         key: Some(key),
                         is_key_down: false,
                         changed_modifier: None,
